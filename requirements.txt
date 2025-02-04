@@ -1,0 +1,10 @@
+streamlit
+requests
+Pillow
+streamlit-lottie
+streamlit-shadcn-ui
+streamlit-extras
+streamlit-on-Hover-tabs
+supabase
+extra-streamlit-components
+pyautogui
